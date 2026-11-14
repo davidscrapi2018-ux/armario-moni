@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+  <title>Armario de Moni</title>
+  <meta name="theme-color" content="#f7f1ea">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Armario Moni">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">Armario</h1>
+    <div id="header-actions"></div>
+  </header>
+  <main id="view"></main>
+  <nav class="tabbar">
+    <a href="#/armario" data-tab="/armario">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10 6.5a2 2 0 1 1 2.6 1.9c-.4.2-.6.5-.6.9V10"/><path d="M12 10 3.6 16.2c-.8.6-.4 1.8.6 1.8h15.6c1 0 1.4-1.2.6-1.8z"/></svg>
+      <span>Armario</span></a>
+    <a href="#/outfits/visteme" data-tab="/outfits">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4 4 6.5l1.5 4L7.5 10v10h9V10l2 .5 1.5-4L16 4c-.5 1.5-2 2.5-4 2.5S8.5 5.5 8 4z"/></svg>
+      <span>Outfits</span></a>
+    <a href="#/plan" data-tab="/plan">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="5" width="16" height="15" rx="2"/><path d="M4 10h16M9 3v4M15 3v4"/></svg>
+      <span>Plan</span></a>
+    <a href="#/stats" data-tab="/stats">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V11M12 20V5M19 20v-6"/></svg>
+      <span>Estadísticas</span></a>
+    <a href="#/mas" data-tab="/mas">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="12" r="1.2"/><circle cx="12" cy="12" r="1.2"/><circle cx="18" cy="12" r="1.2"/></svg>
+      <span>Más</span></a>
+  </nav>
+  <script>
+    // Si algo falla, lo muestra en pantalla en vez de quedarse en blanco
+    function showErr(m) { var d = document.createElement('pre'); d.className = 'fatal'; d.textContent = 'Error: ' + m; document.body.appendChild(d); }
+    window.addEventListener('error', function (e) { showErr(e.message + ' @ ' + (e.filename || '') + ':' + (e.lineno || '')); });
+    window.addEventListener('unhandledrejection', function (e) { showErr(e.reason && (e.reason.stack || e.reason.message) || e.reason); });
+  </script>
+  <script type="module" src="app.js"></script>
+</body>
+</html>
