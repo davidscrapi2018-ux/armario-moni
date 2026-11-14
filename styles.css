@@ -311,3 +311,4 @@ input[type=color] { width: 52px; height: 44px; border: 1px solid var(--line); bo
 .seg.two { grid-template-columns: 1fr 1fr; }
 .seg a { cursor: pointer; }
 [hidden] { display: none !important; }
+.seg.three { grid-template-columns: 1.3fr 1fr 1fr; }

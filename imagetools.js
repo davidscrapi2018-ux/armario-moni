@@ -42,8 +42,37 @@ export async function removeBackground(blob, onProgress) {
     output: { format: 'image/png' },
     progress: (key, cur, total) => onProgress && onProgress(key, cur, total),
   });
+  // 2ª IA (Segment Anything): a partir de lo que ha visto la 1ª, selecciona el objeto ENTERO
+  let extra = null;
+  try { extra = await samComplete(blob, cut, onProgress); } catch (e) { console.warn('SAM', e); }
   onProgress && onProgress('refine', 0, 0);
-  return refineCutout(blob, cut);
+  return refineCutout(blob, cut, extra);
+}
+
+async function samComplete(blob, cut, onProgress) {
+  const SAM = await import('./sam.js');
+  onProgress && onProgress('sam', 0, 0);
+  const seg = await SAM.prepare(blob, (l, t) => onProgress && onProgress('fetch:sam', l, t));
+  const { W, H } = seg;
+  const C = await pixelsOf(cut, W, H); const a = C.data.data; const N = W * H;
+  let sx = 0, sy = 0, n = 0;
+  const m1 = new Uint8Array(N);
+  for (let i = 0; i < N; i++) if (a[i * 4 + 3] > 110) { m1[i] = 1; sx += i % W; sy += (i / W) | 0; n++; }
+  const points = [];
+  if (n > 50) {
+    let cx = sx / n, cy = sy / n;
+    // si el centro cae fuera de lo detectado, uso el píxel detectado más cercano
+    if (!m1[Math.round(cy) * W + Math.round(cx)]) {
+      let best = 1e18;
+      for (let i = 0; i < N; i += 3) if (m1[i]) { const d = (i % W - cx) ** 2 + (((i / W) | 0) - cy) ** 2; if (d < best) { best = d; points[0] = { x: i % W, y: (i / W) | 0, label: 1 }; } }
+    } else points.push({ x: cx, y: cy, label: 1 });
+  } else points.push({ x: W / 2, y: H / 2, label: 1 });
+  const g = SAM.pickGarment(await seg.segment(points), W, H);
+  if (!g) return null;
+  // debe contener casi todo lo que vio la 1ª IA, si no algo raro ha pasado
+  let inside = 0; for (let i = 0; i < N; i++) if (m1[i] && g.mask[i]) inside++;
+  if (n > 50 && inside / n < 0.6) return null;
+  return { mask: g.mask, W, H };
 }
 
 async function pixelsOf(blob, W, H) {
@@ -61,13 +90,14 @@ async function pixelsOf(blob, W, H) {
 // espacio de color "oponente" sencillo: separa luz de color para no confundir sombras con prenda
 function opp(r, g, b) { return [(r + g + b) / 3, r - g, (r + g) / 2 - b]; }
 
-export async function refineCutout(origBlob, cutBlob) {
+export async function refineCutout(origBlob, cutBlob, extra) {
   const O = await pixelsOf(origBlob);
   const W = O.canvas.width, H = O.canvas.height, N = W * H;
   const C = await pixelsOf(cutBlob, W, H);
   const o = O.data.data, a = C.data.data;
   const m1 = new Uint8Array(N);
   let m1count = 0;
+  if (extra && extra.W === W && extra.H === H) for (let i = 0; i < N; i++) if (extra.mask[i]) a[i * 4 + 3] = 255;
   for (let i = 0; i < N; i++) if (a[i * 4 + 3] > 110) { m1[i] = 1; m1count++; }
 
   // --- color de fondo a partir del borde de la foto ---

@@ -358,6 +358,7 @@ async function processPhoto(file, statusEl, wantBg) {
       cut = await IT.removeBackground(small, (key, cur, total) => {
         if (key.startsWith('fetch') && total) statusEl.textContent = `Descargando detector de prendas… ${Math.round((cur / total) * 100)}%`;
         else if (key.startsWith('compute')) statusEl.textContent = 'Detectando la prenda…';
+        else if (key === 'sam') statusEl.textContent = 'Buscando la prenda entera…';
         else if (key === 'refine') statusEl.textContent = 'Afinando bordes…';
       });
     } catch (err) {
@@ -389,10 +390,11 @@ function retouch(origBlob, cutBlob) {
     const undo = [];
     sheet(`<div class="row between"><h3>Retocar recorte</h3><button class="btn small" data-ok>Listo</button></div>
       <div class="rt-stage"><canvas id="rt" width="${W}" height="${H}"></canvas></div>
-      <div class="seg two"><a data-m="restore" class="on">Recuperar</a><a data-m="erase">Borrar</a></div>
+      <div class="seg three"><a data-m="tap">✨ Tocar prenda</a><a data-m="restore" class="on">Recuperar</a><a data-m="erase">Borrar</a></div>
+      <p class="muted small center" id="rt-msg"></p>
       <div class="row gap"><span class="muted small">Pincel</span><input type="range" id="sz" min="8" max="140" value="40" class="grow"></div>
       <div class="row gap mt"><button class="btn ghost grow small" data-undo>Deshacer</button><button class="btn ghost grow small" data-ghost>Ocultar foto</button><button class="btn ghost grow small" data-reset>Empezar de nuevo</button></div>
-      <p class="muted small center">“Recuperar”: pinta sobre la parte de la prenda que falta. “Borrar”: pinta sobre lo que sobra.</p>`,
+      <p class="muted small center">“Tocar prenda”: toca la prenda y la IA la selecciona entera (toca otra parte si falta algo). “Recuperar”: pinta lo que falta. “Borrar”: pinta lo que sobra.</p>`,
     (b, close) => {
       const cv = b.querySelector('#rt'); const ctx = cv.getContext('2d');
       const draw = () => {
@@ -413,14 +415,35 @@ function retouch(origBlob, cutBlob) {
         mx.globalCompositeOperation = 'source-over';
         last = p; draw();
       };
-      cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); undo.push(mx.getImageData(0, 0, W, H)); if (undo.length > 15) undo.shift(); last = null; paint(pt(e)); });
+      const msg = b.querySelector('#rt-msg');
+      let segP = null; const taps = []; let busy = false;
+      const tapSelect = async (p) => {
+        if (busy) return; busy = true;
+        try {
+          msg.textContent = 'La IA está buscando la prenda… (la primera vez tarda un poco)';
+          if (!segP) segP = import('./sam.js').then((SAM) => SAM.prepare(origBlob, (l, t) => { msg.textContent = `Descargando IA… ${Math.round((l / t) * 100)}%`; }).then((seg) => ({ SAM, seg })));
+          const { SAM, seg } = await segP;
+          taps.push({ x: p.x * (seg.W / W), y: p.y * (seg.H / H), label: 1 });
+          const cands = await seg.segment(taps);
+          const g = SAM.pickGarment(cands, seg.W, seg.H) || [...cands].sort((a, c) => c.score - a.score)[0];
+          const tmp = document.createElement('canvas'); tmp.width = seg.W; tmp.height = seg.H;
+          const tx = tmp.getContext('2d'); const id = tx.createImageData(seg.W, seg.H);
+          for (let i = 0; i < g.mask.length; i++) id.data[i * 4 + 3] = g.mask[i] ? 255 : 0;
+          tx.putImageData(id, 0, 0);
+          undo.push(mx.getImageData(0, 0, W, H)); if (undo.length > 15) undo.shift();
+          mx.clearRect(0, 0, W, H); mx.drawImage(tmp, 0, 0, W, H); draw();
+          msg.textContent = '¿Falta algo? Toca esa parte también. Para afinar usa Recuperar/Borrar.';
+        } catch (err) { console.error(err); msg.textContent = 'No se pudo usar la IA (¿sin internet?). Usa el pincel.'; }
+        busy = false;
+      };
+      cv.addEventListener('pointerdown', (e) => { if (mode === 'tap') { tapSelect(pt(e)); return; } cv.setPointerCapture(e.pointerId); undo.push(mx.getImageData(0, 0, W, H)); if (undo.length > 15) undo.shift(); last = null; paint(pt(e)); });
       cv.addEventListener('pointermove', (e) => { if (last) paint(pt(e)); });
       const end = () => { last = null; };
       cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
       b.querySelectorAll('[data-m]').forEach((x) => x.onclick = () => { mode = x.dataset.m; b.querySelectorAll('[data-m]').forEach((y) => y.classList.toggle('on', y === x)); });
       b.querySelector('#sz').oninput = (e) => { size = Number(e.target.value); };
       b.querySelector('[data-undo]').onclick = () => { const d = undo.pop(); if (d) { mx.putImageData(d, 0, 0); draw(); } };
-      b.querySelector('[data-reset]').onclick = () => { undo.push(mx.getImageData(0, 0, W, H)); mx.putImageData(initial, 0, 0); draw(); };
+      b.querySelector('[data-reset]').onclick = () => { taps.length = 0; undo.push(mx.getImageData(0, 0, W, H)); mx.putImageData(initial, 0, 0); draw(); };
       b.querySelector('[data-ghost]').onclick = (e) => { ghost = !ghost; e.target.textContent = ghost ? 'Ocultar foto' : 'Ver foto'; draw(); };
       b.querySelector('[data-ok]').onclick = async () => { draw(); finish(await IT.canvasToBlob(comp, 'image/png')); close(); };
       draw();
@@ -1247,7 +1270,7 @@ route(/^\/ajustes$/, async () => {
       <button class="btn ghost block mt" id="imp">Importar copia</button>
     </section>
     <section class="box"><h3>Zona peligrosa</h3><button class="btn ghost danger-text block" id="wipe">Borrar todo</button></section>
-    <p class="muted center small">Armario Virtual de Moni · v2</p>`;
+    <p class="muted center small">Armario Virtual de Moni · v3</p>`;
   $view.querySelector('#cur').onchange = async (e) => { S.settings.currency = e.target.value; await db.put('meta', { id: 'settings', ...S.settings }); };
   $view.querySelector('#bg').onchange = async (e) => { S.settings.autoBg = e.target.checked; await db.put('meta', { id: 'settings', ...S.settings }); };
   $view.querySelector('#exp').onclick = exportBackup;
