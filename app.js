@@ -64,14 +64,14 @@ function toast(msg) {
   setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 2200);
 }
 
-function sheet(html, onMount, { full = false } = {}) {
+function sheet(html, onMount, { full = false, onClose = null } = {}) {
   const wrap = document.createElement('div');
   wrap.className = 'sheet-wrap';
   wrap.innerHTML = `<div class="sheet-bg"></div><div class="sheet ${full ? 'full' : ''}"><div class="grab"></div><div class="sheet-body">${html}</div></div>`;
   document.body.appendChild(wrap);
   requestAnimationFrame(() => wrap.classList.add('open'));
   let closed = false;
-  const close = () => { if (closed) return; closed = true; wrap.classList.remove('open'); setTimeout(() => wrap.remove(), 260); };
+  const close = () => { if (closed) return; closed = true; onClose && onClose(); wrap.classList.remove('open'); setTimeout(() => wrap.remove(), 260); };
   wrap.querySelector('.sheet-bg').onclick = close;
   const body = wrap.querySelector('.sheet-body');
   onMount && onMount(body, close);
@@ -189,96 +189,250 @@ async function render() {
 }
 window.addEventListener('hashchange', render);
 
-// ================== ARMARIO ==================
-route(/^\/armario$/, () => {
-  const act = active();
-  const value = act.reduce((s, i) => s + (Number(i.price) || 0), 0);
-  setHeader('Armario', `<button class="icon-btn" id="h-add" aria-label="Añadir prenda">${ICON.plus}</button>`);
-  const chips = [['todo', 'Todo'], ...CATS.map((c) => [c.id, c.label]), ['fav', '♥ Favoritos'], ['archivo', 'Archivado']];
-  $view.innerHTML = `
-    <section class="hero">
-      <div><div class="big">${act.length}</div><div class="muted">prendas</div></div>
-      <div><div class="big">${S.outfits.length}</div><div class="muted">outfits</div></div>
-      <div><div class="big">${money(value)}</div><div class="muted">valor</div></div>
-    </section>
-    <div class="search"><span>${ICON.search}</span><input id="q" placeholder="Buscar por nombre, marca, color, etiqueta…" value="${esc(ui.q)}"></div>
-    <div class="chips" id="chips">${chips.map(([id, l]) => `<button class="chip ${ui.cat === id ? 'on' : ''}" data-c="${id}">${esc(l)}</button>`).join('')}</div>
-    <div class="row between small-row"><span class="muted" id="count"></span>
-      <select id="sort" class="select-mini">
-        ${[['recientes', 'Más recientes'], ['usadas', 'Más usadas'], ['menos', 'Menos usadas'], ['precio', 'Precio'], ['cpu', 'Coste por uso'], ['color', 'Color']].map(([v, l]) => `<option value="${v}" ${ui.sort === v ? 'selected' : ''}>${l}</option>`).join('')}
-      </select></div>
-    <div class="grid" id="grid"></div>
-    <button class="fab" id="fab" aria-label="Añadir prenda">${ICON.plus}</button>`;
-  const drawGrid = () => {
-    const q = ui.q.toLowerCase();
-    let L = S.items.filter((i) => {
-      if (ui.cat === 'archivo') { if (!i.archived) return false; }
-      else if (i.archived) return false;
-      if (ui.cat === 'fav' && !i.fav) return false;
-      if (!['todo', 'fav', 'archivo'].includes(ui.cat) && i.cat !== ui.cat) return false;
-      if (q) {
-        const hay = [i.name, i.brand, i.color?.name, catLabel(i.cat), ...(i.tags || []), ...(i.seasons || [])].join(' ').toLowerCase();
-        if (!hay.includes(q)) return false;
-      }
-      return true;
-    });
-    const sorters = {
-      recientes: (a, b) => (b.created || 0) - (a.created || 0),
-      usadas: (a, b) => wears(b) - wears(a),
-      menos: (a, b) => wears(a) - wears(b),
-      precio: (a, b) => (b.price || 0) - (a.price || 0),
-      cpu: (a, b) => (cpw(a) ?? 1e9) - (cpw(b) ?? 1e9),
-      color: (a, b) => (a.color?.name || '').localeCompare(b.color?.name || ''),
+// ================== ARMARIO (perfil) ==================
+const profile = () => S.settings.profile || (S.settings.profile = { name: 'Moni', handle: 'armariodemoni', avatar: null, cover: null });
+
+function profileSheet() {
+  const p = profile();
+  sheet(`<h3>Tu perfil</h3>
+    <div class="row gap"><div class="avatar-edit" id="av">${p.avatar ? img(p.avatar) : `<span>${esc((p.name || 'M')[0])}</span>`}</div>
+    <div class="grow"><button class="btn ghost small block" id="av-btn">Cambiar foto de perfil</button><button class="btn ghost small block mt" id="cv-btn">Cambiar portada</button></div></div>
+    <label class="lbl">Nombre</label><input class="input" id="pn" value="${esc(p.name)}">
+    <label class="lbl">Usuario</label><input class="input" id="ph" value="${esc(p.handle)}">
+    <button class="btn block mt" id="ok">Guardar</button>`, (b, close) => {
+    const pickInto = async (key, max) => {
+      const [f] = await pickFile(); if (!f) return;
+      const id = await saveImage(await IT.shrink(f, max));
+      if (p[key]) await deleteImage(p[key]);
+      p[key] = id; await saveSettings(); toast('Foto actualizada');
+      if (key === 'avatar') { b.querySelector('#av').innerHTML = img(id); hydrate(b); }
     };
-    L.sort(sorters[ui.sort]);
-    $view.querySelector('#count').textContent = `${L.length} ${L.length === 1 ? 'prenda' : 'prendas'}`;
-    $view.querySelector('#grid').innerHTML = L.length ? L.map((i) => `
-      <a class="card" href="#/prenda/${i.id}">
-        <div class="thumb">${img(i.img)}${i.fav ? '<span class="heart">♥</span>' : ''}</div>
-        <div class="cap"><span>${esc(i.name || catLabel(i.cat))}</span><span class="muted">${wears(i)}×</span></div>
-      </a>`).join('') : `<div class="empty"><p>${S.items.length ? 'Nada por aquí.' : 'Tu armario está vacío.<br>Pulsa <b>+</b> para añadir tu primera prenda.'}</p></div>`;
-    hydrate($view);
-  };
-  $view.querySelector('#q').oninput = (e) => { ui.q = e.target.value; drawGrid(); };
-  $view.querySelector('#sort').onchange = (e) => { ui.sort = e.target.value; drawGrid(); };
-  $view.querySelector('#chips').onclick = (e) => {
-    const c = e.target.closest('.chip'); if (!c) return;
-    ui.cat = c.dataset.c;
-    $view.querySelectorAll('#chips .chip').forEach((x) => x.classList.toggle('on', x === c));
+    b.querySelector('#av-btn').onclick = () => pickInto('avatar', 600);
+    b.querySelector('#cv-btn').onclick = () => pickInto('cover', 1400);
+    b.querySelector('#ok').onclick = async () => {
+      p.name = b.querySelector('#pn').value.trim() || 'Moni';
+      p.handle = b.querySelector('#ph').value.trim().replace(/^@/, '');
+      await saveSettings(); close(); render();
+    };
+  });
+}
+async function saveSettings() { await db.put('meta', { id: 'settings', ...S.settings }); }
+
+route(/^\/armario$/, () => {
+  const p = profile();
+  const act = active();
+  const archived = S.items.filter((i) => i.archived).length;
+  ui.ptab = ui.ptab || 'prendas';
+  setHeader('', `<button class="icon-btn" id="h-set" aria-label="Ajustes">${ICON.gear}</button><button class="icon-btn" id="h-add" aria-label="Añadir prenda">${ICON.plus}</button>`);
+  const bubbles = [['todo', 'Todo'], ['fav', 'Favoritos'], ...CATS.map((c) => [c.id, c.label])]
+    .map(([id, l]) => {
+      const pool = id === 'todo' ? act : id === 'fav' ? act.filter((i) => i.fav) : act.filter((i) => i.cat === id);
+      if (!pool.length && !['todo'].includes(id)) return '';
+      const cover = [...pool].sort((a, b) => wears(b) - wears(a))[0];
+      return `<button class="bubble ${ui.cat === id ? 'on' : ''}" data-c="${id}"><span class="bub">${cover ? img(cover.img) : ''}</span><span class="bl">${esc(l)}</span></button>`;
+    }).join('');
+  $view.innerHTML = `
+    <section class="profile">
+      <div class="cover">${p.cover ? img(p.cover) : ''}</div>
+      <button class="avatar" id="avatar">${p.avatar ? img(p.avatar) : `<span>${esc((p.name || 'M')[0])}</span>`}</button>
+      <div class="pname">${esc(p.name)}</div>
+      ${p.handle ? `<div class="handle">@${esc(p.handle)}</div>` : ''}
+      <div class="ptabs">
+        <button data-pt="prendas" class="${ui.ptab === 'prendas' ? 'on' : ''}"><b>${act.length}</b><span>Prendas</span></button>
+        <button data-pt="outfits" class="${ui.ptab === 'outfits' ? 'on' : ''}"><b>${S.outfits.length}</b><span>Outfits</span></button>
+        <button data-pt="lookbooks" class="${ui.ptab === 'lookbooks' ? 'on' : ''}"><b>${S.lookbooks.length}</b><span>Lookbooks</span></button>
+      </div>
+    </section>
+    <div id="ptab"></div>
+    <button class="fab" id="fab" aria-label="Añadir">${ICON.plus}</button>`;
+  const box = $view.querySelector('#ptab');
+
+  const drawPrendas = () => {
+    box.innerHTML = `
+      <div class="bubbles" id="bubbles">${bubbles}</div>
+      <button class="archived-link ${ui.cat === 'archivo' ? 'on' : ''}" id="arch">Archivado (${archived})</button>
+      <div class="row gap"><div class="search grow"><span>${ICON.search}</span><input id="q" placeholder="Buscar" value="${esc(ui.q)}"></div>
+        <button class="icon-btn sq" id="sortbtn" aria-label="Ordenar">${ICON.sliders}</button></div>
+      <div class="grid two-col items" id="grid"></div>`;
+    const drawGrid = () => {
+      const q = ui.q.toLowerCase();
+      const L = S.items.filter((i) => {
+        if (ui.cat === 'archivo') { if (!i.archived) return false; }
+        else if (i.archived) return false;
+        if (ui.cat === 'fav' && !i.fav) return false;
+        if (!['todo', 'fav', 'archivo'].includes(ui.cat) && i.cat !== ui.cat) return false;
+        if (q) {
+          const hay = [i.name, i.brand, i.color?.name, catLabel(i.cat), ...(i.tags || []), ...(i.seasons || [])].join(' ').toLowerCase();
+          if (!hay.includes(q)) return false;
+        }
+        return true;
+      });
+      const sorters = {
+        recientes: (a, b) => (b.created || 0) - (a.created || 0),
+        usadas: (a, b) => wears(b) - wears(a),
+        menos: (a, b) => wears(a) - wears(b),
+        precio: (a, b) => (b.price || 0) - (a.price || 0),
+        cpu: (a, b) => (cpw(a) ?? 1e9) - (cpw(b) ?? 1e9),
+        color: (a, b) => (a.color?.name || '').localeCompare(b.color?.name || ''),
+      };
+      L.sort(sorters[ui.sort]);
+      box.querySelector('#grid').innerHTML = L.length ? L.map((i) => `
+        <a class="card item-card" href="#/prenda/${i.id}">
+          <div class="thumb">${img(i.img)}<button class="heart-btn ${i.fav ? 'on' : ''}" data-fav="${i.id}" aria-label="Favorito">${i.fav ? ICON.heartFill : ICON.heart}</button></div>
+          <div class="cap"><span>${esc(i.name || catLabel(i.cat))}</span><span class="muted">${wears(i)}×</span></div>
+        </a>`).join('') : `<div class="empty"><p>${S.items.length ? 'Nada por aquí.' : 'Tu armario está vacío.<br>Pulsa <b>+</b> para añadir tu primera prenda.'}</p></div>`;
+      hydrate(box);
+    };
+    box.querySelector('#q').oninput = (e) => { ui.q = e.target.value; drawGrid(); };
+    box.querySelector('#bubbles').onclick = (e) => {
+      const c = e.target.closest('.bubble'); if (!c) return;
+      ui.cat = c.dataset.c;
+      box.querySelectorAll('.bubble').forEach((x) => x.classList.toggle('on', x === c));
+      box.querySelector('#arch').classList.remove('on');
+      drawGrid();
+    };
+    box.querySelector('#arch').onclick = (e) => {
+      ui.cat = ui.cat === 'archivo' ? 'todo' : 'archivo';
+      e.target.classList.toggle('on', ui.cat === 'archivo');
+      box.querySelectorAll('.bubble').forEach((x) => x.classList.toggle('on', x.dataset.c === ui.cat));
+      drawGrid();
+    };
+    box.querySelector('#sortbtn').onclick = () => {
+      const opts = [['recientes', 'Más recientes'], ['usadas', 'Más usadas'], ['menos', 'Menos usadas'], ['precio', 'Precio'], ['cpu', 'Coste por uso'], ['color', 'Color']];
+      sheet(`<h3>Ordenar por</h3><div class="list">${opts.map(([v, l]) => `<button class="list-row" data-s="${v}"><span>${l}</span><span>${ui.sort === v ? '✓' : ''}</span></button>`).join('')}</div>`,
+        (b, close) => b.querySelectorAll('[data-s]').forEach((x) => x.onclick = () => { ui.sort = x.dataset.s; close(); drawGrid(); }));
+    };
+    box.querySelector('#grid').onclick = async (e) => {
+      const h = e.target.closest('[data-fav]'); if (!h) return;
+      e.preventDefault(); e.stopPropagation();
+      const it = itemById(h.dataset.fav); it.fav = !it.fav; await save('items', it);
+      h.classList.toggle('on', it.fav); h.innerHTML = it.fav ? ICON.heartFill : ICON.heart;
+    };
     drawGrid();
   };
-  $view.querySelector('#fab').onclick = () => go('/nueva');
+
+  const drawOutfits = () => {
+    const L = [...S.outfits].sort((a, b) => b.created - a.created);
+    box.innerHTML = `<a class="btn ghost block" href="#/outfits/visteme">+ Crear outfit</a>
+      <div class="grid two-col mt">${L.map((o) => `<button class="card" data-o="${o.id}"><div class="thumb tall">${img(o.preview)}</div><div class="cap"><span>${esc(o.name)}</span></div></button>`).join('') || '<div class="empty"><p>Aún no hay outfits.</p></div>'}</div>`;
+    box.querySelectorAll('[data-o]').forEach((b) => b.onclick = () => outfitSheet(b.dataset.o));
+    hydrate(box);
+  };
+
+  const drawLookbooks = () => {
+    box.innerHTML = `<button class="btn ghost block" id="new-lb">+ Nuevo lookbook</button>
+      <div class="grid two-col mt">${S.lookbooks.map((lb) => {
+        const covers = lb.outfits.slice(0, 4).map((id) => S.outfits.find((o) => o.id === id)).filter(Boolean);
+        return `<a class="card" href="#/lookbook/${lb.id}"><div class="thumb collage">${covers.map((c) => img(c.preview)).join('') || '<div class="noimg"></div>'}</div><div class="cap"><span>${esc(lb.name)}</span><span class="muted">${lb.outfits.length}</span></div></a>`;
+      }).join('')}</div>`;
+    box.querySelector('#new-lb').onclick = async () => {
+      const n = await promptBox('Nombre del lookbook', '', 'Ej: Fiestas'); if (!n) return;
+      await save('lookbooks', { id: uid(), name: n, outfits: [], created: Date.now() }); render();
+    };
+    hydrate(box);
+  };
+
+  const tabs = { prendas: drawPrendas, outfits: drawOutfits, lookbooks: drawLookbooks };
+  $view.querySelector('.ptabs').onclick = (e) => {
+    const t = e.target.closest('[data-pt]'); if (!t) return;
+    ui.ptab = t.dataset.pt;
+    $view.querySelectorAll('.ptabs button').forEach((x) => x.classList.toggle('on', x === t));
+    tabs[ui.ptab]();
+  };
+  $view.querySelector('#avatar').onclick = profileSheet;
+  $view.querySelector('#fab').onclick = () => go(ui.ptab === 'outfits' ? '/outfits/visteme' : '/nueva');
   $actions.querySelector('#h-add').onclick = () => go('/nueva');
-  drawGrid();
+  $actions.querySelector('#h-set').onclick = () => go('/ajustes');
+  tabs[ui.ptab]();
 });
 
 // ---------- formulario de prenda (nueva / editar) ----------
+// Devuelve { original, cut (sin recortar bordes, o null), finalBlob (lo que se ve), color }
 async function processPhoto(file, statusEl, wantBg) {
   statusEl.textContent = 'Preparando foto…';
   const small = await IT.shrink(file);
-  let finalBlob = small;
+  let cut = null;
   if (wantBg) {
     try {
-      statusEl.textContent = 'Quitando el fondo… (la primera vez tarda un poco)';
-      finalBlob = await IT.removeBackground(small, (key, cur, total) => {
-        if (key.startsWith('fetch') && total) statusEl.textContent = `Descargando quitafondos… ${Math.round((cur / total) * 100)}%`;
-        else if (key.startsWith('compute')) statusEl.textContent = 'Quitando el fondo…';
+      statusEl.textContent = 'Detectando la prenda… (la primera vez tarda un poco)';
+      cut = await IT.removeBackground(small, (key, cur, total) => {
+        if (key.startsWith('fetch') && total) statusEl.textContent = `Descargando detector de prendas… ${Math.round((cur / total) * 100)}%`;
+        else if (key.startsWith('compute')) statusEl.textContent = 'Detectando la prenda…';
+        else if (key === 'refine') statusEl.textContent = 'Afinando bordes…';
       });
     } catch (err) {
       console.error(err);
       statusEl.textContent = 'No se pudo quitar el fondo, uso la foto original.';
-      finalBlob = small;
+      cut = null;
     }
   }
+  const finalBlob = cut ? await IT.trimTransparent(cut) : small;
   const color = await IT.dominantColor(finalBlob);
-  statusEl.textContent = '';
-  return { original: small, finalBlob, color };
+  statusEl.textContent = cut ? '¿Se ha cortado algo? Usa “Retocar” para arreglarlo con el dedo.' : '';
+  return { original: small, cut, finalBlob, color };
+}
+
+// Editor con pincel: borrar / recuperar zonas del recorte
+function retouch(origBlob, cutBlob) {
+  return new Promise(async (resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const ou = URL.createObjectURL(origBlob), cu = URL.createObjectURL(cutBlob);
+    const [oim, cim] = await Promise.all([IT.loadImg(ou), IT.loadImg(cu)]);
+    const W = oim.naturalWidth, H = oim.naturalHeight;
+    const mask = document.createElement('canvas'); mask.width = W; mask.height = H;
+    const mx = mask.getContext('2d', { willReadFrequently: true }); mx.drawImage(cim, 0, 0, W, H);
+    const initial = mx.getImageData(0, 0, W, H);
+    const comp = document.createElement('canvas'); comp.width = W; comp.height = H;
+    const cx = comp.getContext('2d');
+    let mode = 'restore', size = 40, ghost = true;
+    const undo = [];
+    sheet(`<div class="row between"><h3>Retocar recorte</h3><button class="btn small" data-ok>Listo</button></div>
+      <div class="rt-stage"><canvas id="rt" width="${W}" height="${H}"></canvas></div>
+      <div class="seg two"><a data-m="restore" class="on">Recuperar</a><a data-m="erase">Borrar</a></div>
+      <div class="row gap"><span class="muted small">Pincel</span><input type="range" id="sz" min="8" max="140" value="40" class="grow"></div>
+      <div class="row gap mt"><button class="btn ghost grow small" data-undo>Deshacer</button><button class="btn ghost grow small" data-ghost>Ocultar foto</button><button class="btn ghost grow small" data-reset>Empezar de nuevo</button></div>
+      <p class="muted small center">“Recuperar”: pinta sobre la parte de la prenda que falta. “Borrar”: pinta sobre lo que sobra.</p>`,
+    (b, close) => {
+      const cv = b.querySelector('#rt'); const ctx = cv.getContext('2d');
+      const draw = () => {
+        cx.globalCompositeOperation = 'source-over'; cx.clearRect(0, 0, W, H); cx.drawImage(oim, 0, 0);
+        cx.globalCompositeOperation = 'destination-in'; cx.drawImage(mask, 0, 0); cx.globalCompositeOperation = 'source-over';
+        ctx.clearRect(0, 0, W, H);
+        if (ghost) { ctx.globalAlpha = 0.28; ctx.drawImage(oim, 0, 0); ctx.globalAlpha = 1; }
+        ctx.drawImage(comp, 0, 0);
+      };
+      let last = null;
+      const pt = (e) => { const r = cv.getBoundingClientRect(); return { x: (e.clientX - r.left) * (W / r.width), y: (e.clientY - r.top) * (H / r.height), k: W / r.width }; };
+      const paint = (p) => {
+        mx.globalCompositeOperation = mode === 'erase' ? 'destination-out' : 'source-over';
+        mx.strokeStyle = mx.fillStyle = '#000'; mx.lineCap = 'round'; mx.lineJoin = 'round'; mx.lineWidth = size * p.k;
+        mx.beginPath();
+        if (last) { mx.moveTo(last.x, last.y); mx.lineTo(p.x, p.y); mx.stroke(); }
+        else { mx.arc(p.x, p.y, (size * p.k) / 2, 0, Math.PI * 2); mx.fill(); }
+        mx.globalCompositeOperation = 'source-over';
+        last = p; draw();
+      };
+      cv.addEventListener('pointerdown', (e) => { cv.setPointerCapture(e.pointerId); undo.push(mx.getImageData(0, 0, W, H)); if (undo.length > 15) undo.shift(); last = null; paint(pt(e)); });
+      cv.addEventListener('pointermove', (e) => { if (last) paint(pt(e)); });
+      const end = () => { last = null; };
+      cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+      b.querySelectorAll('[data-m]').forEach((x) => x.onclick = () => { mode = x.dataset.m; b.querySelectorAll('[data-m]').forEach((y) => y.classList.toggle('on', y === x)); });
+      b.querySelector('#sz').oninput = (e) => { size = Number(e.target.value); };
+      b.querySelector('[data-undo]').onclick = () => { const d = undo.pop(); if (d) { mx.putImageData(d, 0, 0); draw(); } };
+      b.querySelector('[data-reset]').onclick = () => { undo.push(mx.getImageData(0, 0, W, H)); mx.putImageData(initial, 0, 0); draw(); };
+      b.querySelector('[data-ghost]').onclick = (e) => { ghost = !ghost; e.target.textContent = ghost ? 'Ocultar foto' : 'Ver foto'; draw(); };
+      b.querySelector('[data-ok]').onclick = async () => { draw(); finish(await IT.canvasToBlob(comp, 'image/png')); close(); };
+      draw();
+    }, { full: true, onClose: () => { URL.revokeObjectURL(ou); URL.revokeObjectURL(cu); finish(null); } });
+  });
 }
 
 function itemFormHTML(it) {
   return `
     <div class="photo-box" id="photo">${it.img ? img(it.img) : `<div class="photo-empty">${ICON.camera}<span>Hacer foto o elegir de la galería</span></div>`}</div>
-    <div class="row gap center"><button class="btn ghost small" id="change-photo">${it.img ? 'Cambiar foto' : 'Elegir foto'}</button>
+    <div class="row gap center wrap-row"><button class="btn ghost small" id="change-photo">${it.img ? 'Cambiar foto' : 'Elegir foto'}</button>
+      <button class="btn ghost small" id="retouch" ${it.orig && it.cut ? '' : 'hidden'}>${ICON.brush} Retocar</button>
       <label class="switch"><input type="checkbox" id="bg" ${S.settings.autoBg ? 'checked' : ''}><span>Quitar fondo</span></label></div>
     <p class="status" id="status"></p>
     <label class="lbl">Nombre</label><input class="input" id="f-name" value="${esc(it.name || '')}" placeholder="Ej: Top rojo de tirantes">
@@ -303,7 +457,7 @@ function itemFormHTML(it) {
 }
 
 function mountItemForm(root, it, onSaved) {
-  let pending = null; // {finalBlob, original}
+  let pending = null; // { original, cut, finalBlob }
   let lastFile = null;
   let cat = it.cat || null;
   const status = root.querySelector('#status');
@@ -311,12 +465,16 @@ function mountItemForm(root, it, onSaved) {
     const u = URL.createObjectURL(b);
     root.querySelector('#photo').innerHTML = `<img src="${u}" alt="">`;
   };
+  const setPending = (r) => {
+    pending = r; showBlob(r.finalBlob);
+    root.querySelector('#retouch').hidden = !r.cut;
+  };
   const choose = async () => {
     const [f] = await pickFile(false);
     if (!f) return;
     lastFile = f;
     const r = await processPhoto(f, status, root.querySelector('#bg').checked);
-    pending = r; showBlob(r.finalBlob);
+    setPending(r);
     root.querySelector('#f-hex').value = r.color.hex;
     root.querySelector('#f-color').value = r.color.name;
   };
@@ -324,8 +482,17 @@ function mountItemForm(root, it, onSaved) {
   root.querySelector('#change-photo').onclick = choose;
   root.querySelector('#bg').onchange = async (e) => {
     if (!lastFile) return;
-    const r = await processPhoto(lastFile, status, e.target.checked);
-    pending = r; showBlob(r.finalBlob);
+    setPending(await processPhoto(lastFile, status, e.target.checked));
+  };
+  root.querySelector('#retouch').onclick = async () => {
+    let orig, cut;
+    if (pending) { orig = pending.original; cut = pending.cut; }
+    else { orig = (await db.get('images', it.orig))?.blob; cut = (await db.get('images', it.cut))?.blob; }
+    if (!orig || !cut) return;
+    const nc = await retouch(orig, cut);
+    if (!nc) return;
+    setPending({ original: orig, cut: nc, finalBlob: await IT.trimTransparent(nc) });
+    status.textContent = '';
   };
   root.querySelector('#f-hex').oninput = (e) => { root.querySelector('#f-color').value = IT.nearestColorName(e.target.value); };
   root.querySelector('#f-cat').onclick = (e) => {
@@ -339,9 +506,11 @@ function mountItemForm(root, it, onSaved) {
     if (!cat) { toast('Elige una categoría'); return; }
     const btn = root.querySelector('#f-save'); btn.disabled = true;
     if (pending) {
-      const old = it.img;
+      const old = [it.img, it.orig, it.cut];
       it.img = await saveImage(pending.finalBlob);
-      if (old) await deleteImage(old);
+      it.orig = pending.cut ? await saveImage(pending.original) : null;
+      it.cut = pending.cut ? await saveImage(pending.cut) : null;
+      for (const o of old) if (o) await deleteImage(o);
     }
     const price = parseFloat(String(root.querySelector('#f-price').value).replace(',', '.'));
     Object.assign(it, {
@@ -405,6 +574,7 @@ route(/^\/prenda\/([^/]+)$/, (id) => {
       ${age != null ? `<p class="muted">La tienes desde hace ${age} días${it.buyDate ? ` (${fmtDate(it.buyDate)})` : ''}.</p>` : ''}
       ${it.notes ? `<p>${esc(it.notes)}</p>` : ''}
       <button class="btn block" id="wear">Me lo he puesto hoy</button>
+      ${it.orig && it.cut ? `<button class="btn ghost block mt" id="rt">${ICON.brush} Retocar recorte</button>` : ''}
       <div class="row gap mt">
         <a class="btn ghost grow" href="#/prenda/${it.id}/editar">Editar</a>
         <button class="btn ghost grow" id="arch">${it.archived ? 'Recuperar' : 'Archivar'}</button>
@@ -414,6 +584,18 @@ route(/^\/prenda\/([^/]+)$/, (id) => {
       ${wears(it) ? `<h3 class="mt">Historial</h3><div class="history">${[...it.wears].reverse().slice(0, 30).map((d) => `<span class="tag">${fmtDate(d)} <button class="x" data-unwear="${d}">×</button></span>`).join('')}</div>` : ''}
     </div>`;
   $view.querySelector('#fav').onclick = async () => { it.fav = !it.fav; await save('items', it); render(); };
+  const rtb = $view.querySelector('#rt');
+  if (rtb) rtb.onclick = async () => {
+    const orig = (await db.get('images', it.orig))?.blob, cut = (await db.get('images', it.cut))?.blob;
+    if (!orig || !cut) return;
+    const nc = await retouch(orig, cut); if (!nc) return;
+    const old = [it.img, it.cut];
+    it.cut = await saveImage(nc); it.img = await saveImage(await IT.trimTransparent(nc));
+    for (const o of old) await deleteImage(o);
+    await save('items', it);
+    for (const o of S.outfits.filter((x) => x.items.includes(it.id))) await createOutfit(o.name, o.layout || stackLayout(o.items.map(itemById).filter(Boolean)), o);
+    toast('Recorte actualizado'); render();
+  };
   $view.querySelector('#wear').onclick = async () => {
     const t = todayISO();
     if ((it.wears || []).includes(t)) { toast('Ya estaba apuntado hoy'); return; }
@@ -425,7 +607,7 @@ route(/^\/prenda\/([^/]+)$/, (id) => {
   };
   $view.querySelector('#del').onclick = async () => {
     if (!(await confirmBox('¿Borrar esta prenda para siempre?'))) return;
-    await deleteImage(it.img); await remove('items', it.id);
+    await deleteImage(it.img); await deleteImage(it.orig); await deleteImage(it.cut); await remove('items', it.id);
     for (const o of S.outfits) if (o.items.includes(it.id)) { o.items = o.items.filter((x) => x !== it.id); if (o.layout) o.layout = o.layout.filter((l) => l.itemId !== it.id); await save('outfits', o); }
     go('/armario');
   };
@@ -433,99 +615,99 @@ route(/^\/prenda\/([^/]+)$/, (id) => {
   $view.querySelectorAll('[data-o]').forEach((b) => b.onclick = () => outfitSheet(b.dataset.o));
 });
 
-// ================== OUTFITS ==================
-const OUTFIT_TABS = [['visteme', 'Vísteme'], ['lienzo', 'Lienzo'], ['guardados', 'Guardados'], ['lookbooks', 'Lookbooks']];
+// ================== ESTILISMO ==================
+const OUTFIT_TABS = [['visteme', 'Vísteme'], ['lienzo', 'Lienzo'], ['moodboards', 'Moodboards']];
 function outfitTabs(cur) {
-  return `<div class="seg">${OUTFIT_TABS.map(([id, l]) => `<a class="${cur === id ? 'on' : ''}" href="#/outfits/${id}">${l}</a>`).join('')}</div>`;
+  return `<div class="utabs">${OUTFIT_TABS.map(([id, l]) => `<a class="${cur === id ? 'on' : ''}" href="#/outfits/${id}">${l}</a>`).join('')}</div>`;
 }
 route(/^\/outfits$/, () => go('/outfits/visteme'));
+route(/^\/outfits\/guardados$/, () => { ui.ptab = 'outfits'; go('/armario'); });
+route(/^\/outfits\/lookbooks$/, () => { ui.ptab = 'lookbooks'; go('/armario'); });
 
-// ---------- Vísteme ----------
-const DRESS_ROWS = [
-  { id: 'abrigos', label: 'Abrigo', optional: true },
-  { id: 'arriba', label: 'Arriba' },
-  { id: 'vestidos', label: 'Vestido', dress: true },
-  { id: 'abajo', label: 'Abajo' },
-  { id: 'zapatos', label: 'Zapatos' },
-  { id: 'bolsos', label: 'Bolso', optional: true },
-  { id: 'accesorios', label: 'Accesorio', optional: true },
-];
+// ---------- Vísteme (carruseles) ----------
+const LAYOUTS = {
+  2: ['vestidos', 'zapatos'],
+  3: ['arriba', 'abajo', 'zapatos'],
+  4: ['abrigos', 'arriba', 'abajo', 'zapatos'],
+};
 function dressState() {
-  if (!ui.dress) ui.dress = { idx: {}, locked: new Set(), dressMode: false, extras: new Set(), season: '' };
+  if (!ui.dress) ui.dress = { idx: {}, locked: new Set(), layout: 3, extras: new Set(), season: '' };
   return ui.dress;
 }
-function rowsVisible(st) {
-  return DRESS_ROWS.filter((r) => {
-    if (r.optional) return st.extras.has(r.id);
-    if (st.dressMode) return r.id !== 'arriba' && r.id !== 'abajo';
-    return !r.dress;
-  });
-}
+const dressRows = (st) => [...LAYOUTS[st.layout], ...['bolsos', 'accesorios'].filter((x) => st.extras.has(x))];
 const rowItems = (cat, st) => active().filter((i) => i.cat === cat && (!st.season || !(i.seasons || []).length || i.seasons.includes(st.season)));
+const layoutIcon = (n) => sv(Array.from({ length: n }, (_, k) => { const h = 16 / n; return `<rect x="5" y="${4 + k * h + 0.8}" width="14" height="${h - 1.6}" rx="1.2"/>`; }).join(''));
 
 route(/^\/outfits\/visteme$/, () => {
   const st = dressState();
-  setHeader('Outfits');
-  const draw = () => {
-    const rows = rowsVisible(st);
-    $view.innerHTML = `${outfitTabs('visteme')}
-      <div class="row gap wrap-row dm-opts">
-        <button class="chip ${st.dressMode ? 'on' : ''}" id="mode">${st.dressMode ? 'Modo vestido' : 'Arriba + abajo'}</button>
-        ${DRESS_ROWS.filter((r) => r.optional).map((r) => `<button class="chip ${st.extras.has(r.id) ? 'on' : ''}" data-extra="${r.id}">+ ${r.label}</button>`).join('')}
-        <select class="select-mini" id="season"><option value="">Todas las temporadas</option>${SEASONS.map((s) => `<option ${st.season === s ? 'selected' : ''}>${s}</option>`).join('')}</select>
-      </div>
-      <div class="dm">${rows.map((r) => {
-        const L = rowItems(r.id, st);
-        if (!L.length) return `<div class="dm-row empty-row"><span class="muted">Sin prendas en "${esc(catLabel(r.id))}"</span></div>`;
-        const i = ((st.idx[r.id] || 0) % L.length + L.length) % L.length; st.idx[r.id] = i;
-        return `<div class="dm-row ${r.id === 'zapatos' || r.optional ? 'short' : ''}" data-row="${r.id}">
-          <button class="dm-arrow" data-dir="-1">‹</button>
-          <div class="dm-img">${img(L[i].img)}</div>
-          <button class="dm-arrow" data-dir="1">›</button>
-          <button class="dm-lock ${st.locked.has(r.id) ? 'on' : ''}" data-lock="${r.id}" aria-label="Fijar">${st.locked.has(r.id) ? ICON.lock : ICON.unlock}</button>
-          <span class="dm-count">${i + 1}/${L.length}</span>
-        </div>`;
-      }).join('')}</div>
-      <div class="dm-bar">
-        <button class="btn ghost round" id="dice" aria-label="Aleatorio">${ICON.dice}</button>
-        <button class="btn grow" id="save-dm">Guardar outfit</button>
-        <button class="btn ghost round" id="wear-dm" aria-label="Me lo pongo hoy">${ICON.check}</button>
+  setHeader('Estilismo');
+  const rows = dressRows(st);
+  $view.innerHTML = `${outfitTabs('visteme')}
+    <div class="row between dm-top"><button class="icon-btn sq dark" id="filters" aria-label="Filtros">${ICON.sliders}</button><button class="pill-save" id="save-dm">Guardar</button></div>
+    <div class="dm2">${rows.map((r) => {
+      const L = rowItems(r, st);
+      if (!L.length) return `<div class="car-empty" data-row="${r}"><span>Añade ${esc(catLabel(r).toLowerCase())} para verlas aquí</span><a href="#/nueva" class="btn ghost small">+ Añadir</a></div>`;
+      return `<div class="car-wrap ${['zapatos', 'bolsos', 'accesorios'].includes(r) ? 'short' : ''}" data-row="${r}">
+        <div class="car">${L.map((i) => `<div class="car-item" data-id="${i.id}">${img(i.img)}</div>`).join('')}</div>
+        <button class="pin ${st.locked.has(r) ? 'on' : ''}" data-lock="${r}" aria-label="Fijar">${ICON.pin}</button>
       </div>`;
-    hydrate($view);
-    $view.querySelector('#mode').onclick = () => { st.dressMode = !st.dressMode; draw(); };
-    $view.querySelectorAll('[data-extra]').forEach((b) => b.onclick = () => { const id = b.dataset.extra; st.extras.has(id) ? st.extras.delete(id) : st.extras.add(id); draw(); });
-    $view.querySelector('#season').onchange = (e) => { st.season = e.target.value; draw(); };
-    $view.querySelectorAll('.dm-row[data-row]').forEach((row) => {
-      const id = row.dataset.row;
-      row.querySelectorAll('.dm-arrow').forEach((a) => a.onclick = () => { st.idx[id] = (st.idx[id] || 0) + Number(a.dataset.dir); draw(); });
-      row.querySelector('.dm-lock').onclick = () => { st.locked.has(id) ? st.locked.delete(id) : st.locked.add(id); draw(); };
-      let x0 = null;
-      const area = row.querySelector('.dm-img');
-      area.addEventListener('pointerdown', (e) => { x0 = e.clientX; });
-      area.addEventListener('pointerup', (e) => { if (x0 == null) return; const dx = e.clientX - x0; x0 = null; if (Math.abs(dx) > 35) { st.idx[id] = (st.idx[id] || 0) + (dx < 0 ? 1 : -1); draw(); } });
-    });
-    $view.querySelector('#dice').onclick = () => {
-      for (const r of rowsVisible(st)) {
-        if (st.locked.has(r.id)) continue;
-        const n = rowItems(r.id, st).length; if (n) st.idx[r.id] = Math.floor(Math.random() * n);
-      }
-      draw();
-    };
-    const current = () => rowsVisible(st).map((r) => { const L = rowItems(r.id, st); return L.length ? { row: r, item: L[st.idx[r.id] % L.length] } : null; }).filter(Boolean);
-    $view.querySelector('#save-dm').onclick = async () => {
-      const cur = current(); if (!cur.length) { toast('Añade prendas primero'); return; }
-      const name = await promptBox('Nombre del outfit', '', 'Ej: Cena del viernes'); if (name === null) return;
-      const layout = stackLayout(cur.map((c) => c.item));
-      const o = await createOutfit(name || 'Outfit', layout);
-      toast('Outfit guardado'); outfitSheet(o.id);
-    };
-    $view.querySelector('#wear-dm').onclick = async () => {
-      const cur = current(); if (!cur.length) return;
-      await logWear(cur.map((c) => c.item.id));
-      toast('Apuntado como usado hoy');
-    };
+    }).join('')}</div>
+    <div class="dm-tools">
+      ${[2, 3, 4].map((n) => `<button class="lay ${st.layout === n ? 'on' : ''}" data-lay="${n}" aria-label="${n} filas">${layoutIcon(n)}</button>`).join('')}
+      <button class="lay dice" id="dice" aria-label="Aleatorio">${ICON.dice}</button>
+      <button class="lay" id="wear-dm" aria-label="Me lo pongo hoy">${ICON.check}</button>
+    </div>`;
+  hydrate($view);
+
+  const cars = [...$view.querySelectorAll('.car-wrap')];
+  const itemW = (car) => car.querySelector('.car-item')?.offsetWidth || 1;
+  const mark = (wrap) => {
+    const car = wrap.querySelector('.car'); const r = wrap.dataset.row;
+    const n = car.children.length; const i = Math.max(0, Math.min(n - 1, Math.round(car.scrollLeft / itemW(car))));
+    st.idx[r] = i;
+    [...car.children].forEach((c, k) => c.classList.toggle('center', k === i));
   };
-  draw();
+  cars.forEach((wrap) => {
+    const car = wrap.querySelector('.car'); const r = wrap.dataset.row;
+    const n = car.children.length;
+    const i = ((st.idx[r] || 0) % n + n) % n;
+    requestAnimationFrame(() => { car.scrollLeft = i * itemW(car); mark(wrap); });
+    let t; car.addEventListener('scroll', () => { clearTimeout(t); t = setTimeout(() => mark(wrap), 80); }, { passive: true });
+    car.addEventListener('click', (e) => { const it = e.target.closest('.car-item'); if (!it) return; const k = [...car.children].indexOf(it); car.scrollTo({ left: k * itemW(car), behavior: 'smooth' }); });
+    wrap.querySelector('.pin').onclick = (e) => { st.locked.has(r) ? st.locked.delete(r) : st.locked.add(r); e.currentTarget.classList.toggle('on', st.locked.has(r)); };
+  });
+  $view.querySelectorAll('[data-lay]').forEach((b) => b.onclick = () => { st.layout = Number(b.dataset.lay); render(); });
+  $view.querySelector('#dice').onclick = () => {
+    cars.forEach((wrap) => {
+      if (st.locked.has(wrap.dataset.row)) return;
+      const car = wrap.querySelector('.car'); const n = car.children.length; if (n < 2) return;
+      let k; do { k = Math.floor(Math.random() * n); } while (k === st.idx[wrap.dataset.row] && n > 1);
+      car.scrollTo({ left: k * itemW(car), behavior: 'smooth' });
+    });
+  };
+  $view.querySelector('#filters').onclick = () => {
+    sheet(`<h3>Filtros</h3>
+      <label class="lbl">Temporada</label>
+      <div class="chips wrap" id="fs">${['', ...SEASONS].map((s) => `<button class="chip ${st.season === s ? 'on' : ''}" data-s="${s}">${s || 'Todas'}</button>`).join('')}</div>
+      <label class="lbl">Filas extra</label>
+      <div class="chips wrap" id="fx">${[['bolsos', 'Bolso'], ['accesorios', 'Accesorio']].map(([id, l]) => `<button class="chip ${st.extras.has(id) ? 'on' : ''}" data-x="${id}">${l}</button>`).join('')}</div>
+      <button class="btn block mt" data-ok>Aplicar</button>`, (b, close) => {
+      b.querySelector('#fs').onclick = (e) => { const c = e.target.closest('.chip'); if (!c) return; st.season = c.dataset.s; b.querySelectorAll('#fs .chip').forEach((x) => x.classList.toggle('on', x === c)); };
+      b.querySelector('#fx').onclick = (e) => { const c = e.target.closest('.chip'); if (!c) return; const id = c.dataset.x; st.extras.has(id) ? st.extras.delete(id) : st.extras.add(id); c.classList.toggle('on'); };
+      b.querySelector('[data-ok]').onclick = () => { close(); render(); };
+    });
+  };
+  const current = () => cars.map((wrap) => { const car = wrap.querySelector('.car'); const el = car.children[st.idx[wrap.dataset.row] || 0]; return el ? itemById(el.dataset.id) : null; }).filter(Boolean);
+  $view.querySelector('#save-dm').onclick = async () => {
+    const cur = current(); if (!cur.length) { toast('Añade prendas primero'); return; }
+    const name = await promptBox('Nombre del outfit', '', 'Ej: Cena del viernes'); if (name === null) return;
+    const o = await createOutfit(name || 'Outfit', stackLayout(cur));
+    toast('Outfit guardado'); outfitSheet(o.id);
+  };
+  $view.querySelector('#wear-dm').onclick = async () => {
+    const cur = current(); if (!cur.length) return;
+    await logWear(cur.map((c) => c.id)); toast('Apuntado como usado hoy');
+  };
 });
 
 // coloca prendas apiladas verticalmente (para outfits creados en Vísteme)
@@ -561,7 +743,7 @@ async function createOutfit(name, layout, existing = null) {
 
 // ---------- Lienzo ----------
 route(/^\/outfits\/lienzo(?:\/([^/]+))?$/, (editId) => {
-  setHeader('Outfits');
+  setHeader('Estilismo');
   if (editId) {
     const o = S.outfits.find((x) => x.id === editId);
     if (o && ui.canvasEditing !== editId) { ui.canvas = JSON.parse(JSON.stringify(o.layout || stackLayout(o.items.map(itemById).filter(Boolean)))); ui.canvasEditing = editId; }
@@ -656,18 +838,9 @@ route(/^\/outfits\/lienzo(?:\/([^/]+))?$/, (editId) => {
     const name = await promptBox('Nombre del outfit', existing?.name || '', 'Ej: Look de domingo'); if (name === null) return;
     const o = await createOutfit(name || 'Outfit', JSON.parse(JSON.stringify(layers)), existing);
     ui.canvas = null; ui.canvasEditing = null;
-    toast('Outfit guardado'); go('/outfits/guardados'); setTimeout(() => outfitSheet(o.id), 50);
+    toast('Outfit guardado'); ui.ptab = 'outfits'; go('/armario'); setTimeout(() => outfitSheet(o.id), 50);
   };
   draw();
-});
-
-// ---------- Guardados ----------
-route(/^\/outfits\/guardados$/, () => {
-  setHeader('Outfits');
-  const L = [...S.outfits].sort((a, b) => b.created - a.created);
-  $view.innerHTML = `${outfitTabs('guardados')}
-    <div class="grid two-col">${L.length ? L.map((o) => `<button class="card" data-o="${o.id}"><div class="thumb tall">${img(o.preview)}</div><div class="cap"><span>${esc(o.name)}</span></div></button>`).join('') : '<div class="empty"><p>Todavía no hay outfits.<br>Créalos en <b>Vísteme</b> o en el <b>Lienzo</b>.</p></div>'}</div>`;
-  $view.querySelectorAll('[data-o]').forEach((b) => b.onclick = () => outfitSheet(b.dataset.o));
 });
 
 function outfitSheet(id) {
@@ -730,20 +903,6 @@ async function addToLookbook(o) {
     });
 }
 
-// ---------- Lookbooks ----------
-route(/^\/outfits\/lookbooks$/, () => {
-  setHeader('Outfits');
-  $view.innerHTML = `${outfitTabs('lookbooks')}
-    <button class="btn ghost block" id="new-lb">+ Nuevo lookbook</button>
-    <div class="grid two-col mt">${S.lookbooks.map((lb) => {
-      const covers = lb.outfits.slice(0, 4).map((id) => S.outfits.find((o) => o.id === id)).filter(Boolean);
-      return `<a class="card" href="#/lookbook/${lb.id}"><div class="thumb collage">${covers.map((c) => img(c.preview)).join('') || '<div class="noimg"></div>'}</div><div class="cap"><span>${esc(lb.name)}</span><span class="muted">${lb.outfits.length}</span></div></a>`;
-    }).join('')}</div>`;
-  $view.querySelector('#new-lb').onclick = async () => {
-    const n = await promptBox('Nombre del lookbook', '', 'Ej: Fiestas'); if (!n) return;
-    await save('lookbooks', { id: uid(), name: n, outfits: [], created: Date.now() }); render();
-  };
-});
 route(/^\/lookbook\/([^/]+)$/, (id) => {
   const lb = S.lookbooks.find((x) => x.id === id); if (!lb) return go('/outfits/lookbooks');
   setHeader(lb.name, `<button class="icon-btn" onclick="history.back()" aria-label="Volver">${ICON.back}</button>`);
@@ -752,7 +911,7 @@ route(/^\/lookbook\/([^/]+)$/, (id) => {
     <div class="grid two-col mt">${outs.map((o) => `<div class="card"><div class="thumb tall" data-o="${o.id}">${img(o.preview)}</div><div class="cap"><span>${esc(o.name)}</span><button class="x" data-rm="${o.id}">Quitar</button></div></div>`).join('') || '<div class="empty"><p>Lookbook vacío.</p></div>'}</div>`;
   $view.querySelector('#add').onclick = async () => { const oid = await pickOutfit(); if (oid && !lb.outfits.includes(oid)) { lb.outfits.push(oid); await save('lookbooks', lb); render(); } };
   $view.querySelector('#ren').onclick = async () => { const n = await promptBox('Nombre', lb.name); if (n) { lb.name = n; await save('lookbooks', lb); render(); } };
-  $view.querySelector('#del').onclick = async () => { if (await confirmBox('¿Borrar el lookbook? (los outfits no se borran)')) { await remove('lookbooks', lb.id); go('/outfits/lookbooks'); } };
+  $view.querySelector('#del').onclick = async () => { if (await confirmBox('¿Borrar el lookbook? (los outfits no se borran)')) { await remove('lookbooks', lb.id); ui.ptab = 'lookbooks'; go('/armario'); } };
   $view.querySelectorAll('[data-o]').forEach((x) => x.onclick = () => outfitSheet(x.dataset.o));
   $view.querySelectorAll('[data-rm]').forEach((x) => x.onclick = async () => { lb.outfits = lb.outfits.filter((o) => o !== x.dataset.rm); await save('lookbooks', lb); render(); });
 });
@@ -890,7 +1049,7 @@ route(/^\/mas$/, () => {
   $view.innerHTML = `<div class="list big-list">
     <a class="list-row" href="#/maletas"><span>${ICON.bag} Maletas y viajes</span><span class="muted">${S.trips.length}</span></a>
     <a class="list-row" href="#/deseos"><span>${ICON.heart} Lista de deseos</span><span class="muted">${S.wishes.length}</span></a>
-    <a class="list-row" href="#/moodboards"><span>${ICON.board} Moodboards</span><span class="muted">${S.boards.length}</span></a>
+    <a class="list-row" href="#/outfits/moodboards"><span>${ICON.board} Moodboards</span><span class="muted">${S.boards.length}</span></a>
     <a class="list-row" href="#/ajustes"><span>${ICON.gear} Ajustes y copia de seguridad</span><span></span></a>
   </div>`;
 });
@@ -1020,9 +1179,10 @@ function wishDetail(id) {
 }
 
 // ---------- Moodboards ----------
-route(/^\/moodboards$/, () => {
-  setHeader('Moodboards', `<button class="icon-btn" onclick="history.back()" aria-label="Volver">${ICON.back}</button>`);
-  $view.innerHTML = `<button class="btn block" id="new">+ Nuevo moodboard</button>
+route(/^\/moodboards$/, () => go('/outfits/moodboards'));
+route(/^\/outfits\/moodboards$/, () => {
+  setHeader('Estilismo');
+  $view.innerHTML = `${outfitTabs('moodboards')}<button class="btn block" id="new">+ Nuevo moodboard</button>
     <div class="grid two-col mt">${S.boards.map((bd) => {
       const ims = bd.cards.filter((c) => c.img || c.outfit).slice(0, 4).map((c) => c.img || S.outfits.find((o) => o.id === c.outfit)?.preview).filter(Boolean);
       return `<a class="card" href="#/moodboard/${bd.id}"><div class="thumb collage">${ims.map((i) => img(i)).join('') || '<div class="noimg"></div>'}</div><div class="cap"><span>${esc(bd.name)}</span><span class="muted">${bd.cards.length}</span></div></a>`;
@@ -1087,7 +1247,7 @@ route(/^\/ajustes$/, async () => {
       <button class="btn ghost block mt" id="imp">Importar copia</button>
     </section>
     <section class="box"><h3>Zona peligrosa</h3><button class="btn ghost danger-text block" id="wipe">Borrar todo</button></section>
-    <p class="muted center small">Armario Virtual de Moni · v1</p>`;
+    <p class="muted center small">Armario Virtual de Moni · v2</p>`;
   $view.querySelector('#cur').onchange = async (e) => { S.settings.currency = e.target.value; await db.put('meta', { id: 'settings', ...S.settings }); };
   $view.querySelector('#bg').onchange = async (e) => { S.settings.autoBg = e.target.checked; await db.put('meta', { id: 'settings', ...S.settings }); };
   $view.querySelector('#exp').onclick = exportBackup;
@@ -1149,6 +1309,10 @@ const ICON = {
   bag: sv('<rect x="4" y="7" width="16" height="13" rx="2"/><path d="M9 7V5h6v2M8 11v5M16 11v5"/>'),
   heart: sv('<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z"/>'),
   board: sv('<rect x="4" y="4" width="7" height="9" rx="1"/><rect x="13" y="4" width="7" height="5" rx="1"/><rect x="13" y="11" width="7" height="9" rx="1"/><rect x="4" y="15" width="7" height="5" rx="1"/>'),
+  sliders: sv('<path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/>'),
+  pin: sv('<path d="M9 4h6l-1 5 3 3H7l3-3z"/><path d="M12 12v8"/>'),
+  brush: sv('<path d="M14 4l6 6-8 8H6v-6z"/><path d="M11 7l6 6"/>'),
+  heartFill: sv('<path d="M12 20s-7-4.4-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.6-7 10-7 10z" fill="currentColor"/>'),
   gear: sv('<circle cx="12" cy="12" r="3"/><path d="M12 3v2.5M12 18.5V21M3 12h2.5M18.5 12H21M5.6 5.6l1.8 1.8M16.6 16.6l1.8 1.8M5.6 18.4l1.8-1.8M16.6 7.4l1.8-1.8"/>'),
 };
 

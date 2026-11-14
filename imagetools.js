@@ -30,15 +30,153 @@ export async function shrink(file, max = 1200) {
 }
 
 let bgModule;
-// Quita el fondo dentro del propio móvil (la primera vez descarga el modelo, luego queda guardado)
+// Quita el fondo dentro del propio móvil. Devuelve la imagen recortada SIN trim (mismo tamaño que el original)
+// para poder retocarla luego con el pincel.
+//  1) Modelo de IA (isnet_fp16, más preciso que el cuantizado)
+//  2) Detector por color: estima el color del fondo desde los bordes y marca como prenda todo lo que se diferencia
+//  3) Une ambos, se queda con el objeto principal y rellena huecos que no son fondo
 export async function removeBackground(blob, onProgress) {
   if (!bgModule) bgModule = await import('https://cdn.jsdelivr.net/npm/@imgly/background-removal@1.7.0/+esm');
-  const out = await bgModule.removeBackground(blob, {
-    model: 'isnet_quint8',
+  const cut = await bgModule.removeBackground(blob, {
+    model: 'isnet_fp16',
     output: { format: 'image/png' },
     progress: (key, cur, total) => onProgress && onProgress(key, cur, total),
   });
-  return trimTransparent(out);
+  onProgress && onProgress('refine', 0, 0);
+  return refineCutout(blob, cut);
+}
+
+async function pixelsOf(blob, W, H) {
+  const u = URL.createObjectURL(blob);
+  try {
+    const im = await loadImg(u);
+    const c = document.createElement('canvas');
+    c.width = W || im.naturalWidth; c.height = H || im.naturalHeight;
+    const x = c.getContext('2d', { willReadFrequently: true });
+    x.drawImage(im, 0, 0, c.width, c.height);
+    return { canvas: c, ctx: x, data: x.getImageData(0, 0, c.width, c.height) };
+  } finally { URL.revokeObjectURL(u); }
+}
+
+// espacio de color "oponente" sencillo: separa luz de color para no confundir sombras con prenda
+function opp(r, g, b) { return [(r + g + b) / 3, r - g, (r + g) / 2 - b]; }
+
+export async function refineCutout(origBlob, cutBlob) {
+  const O = await pixelsOf(origBlob);
+  const W = O.canvas.width, H = O.canvas.height, N = W * H;
+  const C = await pixelsOf(cutBlob, W, H);
+  const o = O.data.data, a = C.data.data;
+  const m1 = new Uint8Array(N);
+  let m1count = 0;
+  for (let i = 0; i < N; i++) if (a[i * 4 + 3] > 110) { m1[i] = 1; m1count++; }
+
+  // --- color de fondo a partir del borde de la foto ---
+  const band = Math.max(3, Math.round(Math.min(W, H) * 0.03));
+  const samples = [];
+  for (let y = 0; y < H; y += 2) for (let x = 0; x < W; x += 2) {
+    if (x >= band && x < W - band && y >= band && y < H - band) continue;
+    const i = y * W + x; if (m1[i]) continue;
+    samples.push(opp(o[i * 4], o[i * 4 + 1], o[i * 4 + 2]));
+  }
+  let m2 = new Uint8Array(N);
+  if (samples.length > 50) {
+    const med = [0, 1, 2].map((k) => { const v = samples.map((s) => s[k]).sort((p, q) => p - q); return v[v.length >> 1]; });
+    const dist = (r, g, b) => { const p = opp(r, g, b); return Math.sqrt(0.35 * (p[0] - med[0]) ** 2 + (p[1] - med[1]) ** 2 + (p[2] - med[2]) ** 2); };
+    const ds = samples.map((s) => Math.sqrt(0.35 * (s[0] - med[0]) ** 2 + (s[1] - med[1]) ** 2 + (s[2] - med[2]) ** 2)).sort((p, q) => p - q);
+    const thr = Math.max(22, ds[Math.floor(ds.length * 0.95)] * 1.6); // tolera la textura del fondo
+    for (let i = 0; i < N; i++) if (dist(o[i * 4], o[i * 4 + 1], o[i * 4 + 2]) > thr) m2[i] = 1;
+    m2 = majority(m2, W, H);
+    // si el fondo es muy irregular el detector de color no es fiable: lo descartamos
+    let borderFg = 0, borderN = 0;
+    for (let x = 0; x < W; x++) { borderN += 2; borderFg += m2[x] + m2[(H - 1) * W + x]; }
+    for (let y = 0; y < H; y++) { borderN += 2; borderFg += m2[y * W] + m2[y * W + W - 1]; }
+    if (borderFg / borderN > 0.35) m2 = new Uint8Array(N);
+  }
+
+  // --- unión + quedarse con los objetos que toca la IA (o el más grande) ---
+  const u = new Uint8Array(N);
+  for (let i = 0; i < N; i++) u[i] = m1[i] | m2[i];
+  const lab = new Int32Array(N); const sizes = [0]; const hits = [0];
+  const stack = new Int32Array(N);
+  let L = 0;
+  for (let s = 0; s < N; s++) {
+    if (!u[s] || lab[s]) continue;
+    L++; let sp = 0, size = 0, hit = 0; stack[sp++] = s; lab[s] = L;
+    while (sp) {
+      const i = stack[--sp]; size++; hit += m1[i];
+      const x = i % W, y = (i / W) | 0;
+      if (x > 0 && u[i - 1] && !lab[i - 1]) { lab[i - 1] = L; stack[sp++] = i - 1; }
+      if (x < W - 1 && u[i + 1] && !lab[i + 1]) { lab[i + 1] = L; stack[sp++] = i + 1; }
+      if (y > 0 && u[i - W] && !lab[i - W]) { lab[i - W] = L; stack[sp++] = i - W; }
+      if (y < H - 1 && u[i + W] && !lab[i + W]) { lab[i + W] = L; stack[sp++] = i + W; }
+    }
+    sizes.push(size); hits.push(hit);
+  }
+  const keepLab = new Uint8Array(L + 1);
+  let biggest = 0;
+  for (let k = 1; k <= L; k++) {
+    if (sizes[k] > sizes[biggest]) biggest = k;
+    if (m1count && hits[k] > Math.max(30, m1count * 0.02)) keepLab[k] = 1;
+  }
+  if (!keepLab.some((v) => v) && biggest) keepLab[biggest] = 1;
+  const keep = new Uint8Array(N);
+  let keepCount = 0;
+  for (let i = 0; i < N; i++) if (lab[i] && keepLab[lab[i]]) { keep[i] = 1; keepCount++; }
+
+  // --- rellenar huecos interiores (estampados, sombras dentro de la prenda) ---
+  const outside = new Uint8Array(N); let sp = 0;
+  const push = (i) => { if (!keep[i] && !outside[i]) { outside[i] = 1; stack[sp++] = i; } };
+  for (let x = 0; x < W; x++) { push(x); push((H - 1) * W + x); }
+  for (let y = 0; y < H; y++) { push(y * W); push(y * W + W - 1); }
+  while (sp) {
+    const i = stack[--sp]; const x = i % W, y = (i / W) | 0;
+    if (x > 0) push(i - 1); if (x < W - 1) push(i + 1); if (y > 0) push(i - W); if (y < H - 1) push(i + W);
+  }
+  // los huecos pequeños se rellenan siempre; los grandes solo si no se parecen al fondo (p. ej. asa de un bolso)
+  const seen = new Uint8Array(N);
+  for (let s = 0; s < N; s++) {
+    if (keep[s] || outside[s] || seen[s]) continue;
+    const pix = []; let sp2 = 0; stack[sp2++] = s; seen[s] = 1; let fgLike = 0;
+    while (sp2) {
+      const i = stack[--sp2]; pix.push(i); fgLike += m2[i] | m1[i];
+      const x = i % W, y = (i / W) | 0;
+      for (const j of [x > 0 ? i - 1 : -1, x < W - 1 ? i + 1 : -1, y > 0 ? i - W : -1, y < H - 1 ? i + W : -1]) {
+        if (j >= 0 && !keep[j] && !outside[j] && !seen[j]) { seen[j] = 1; stack[sp2++] = j; }
+      }
+    }
+    if (pix.length < keepCount * 0.015 || fgLike / pix.length > 0.3) for (const i of pix) keep[i] = 2;
+  }
+
+  // --- alfa final con bordes suaves ---
+  const alpha = new Uint8ClampedArray(N);
+  for (let i = 0; i < N; i++) {
+    if (!keep[i]) continue;
+    alpha[i] = m1[i] ? Math.max(a[i * 4 + 3], 200) : 255;
+  }
+  const soft = blurAlpha(alpha, W, H);
+  const out = O.ctx.createImageData(W, H);
+  for (let i = 0; i < N; i++) {
+    out.data[i * 4] = o[i * 4]; out.data[i * 4 + 1] = o[i * 4 + 1]; out.data[i * 4 + 2] = o[i * 4 + 2];
+    out.data[i * 4 + 3] = keep[i] ? Math.max(soft[i], m1[i] ? a[i * 4 + 3] : 0) : Math.min(soft[i], 60);
+  }
+  O.ctx.putImageData(out, 0, 0);
+  return canvasToBlob(O.canvas, 'image/png');
+}
+
+function majority(m, W, H) {
+  const r = new Uint8Array(m.length);
+  for (let y = 1; y < H - 1; y++) for (let x = 1; x < W - 1; x++) {
+    const i = y * W + x;
+    const s = m[i - W - 1] + m[i - W] + m[i - W + 1] + m[i - 1] + m[i] + m[i + 1] + m[i + W - 1] + m[i + W] + m[i + W + 1];
+    r[i] = s >= 5 ? 1 : 0;
+  }
+  return r;
+}
+function blurAlpha(a, W, H) {
+  const t = new Uint8ClampedArray(a.length), r = new Uint8ClampedArray(a.length);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; t[i] = (a[i] * 2 + (x > 0 ? a[i - 1] : a[i]) + (x < W - 1 ? a[i + 1] : a[i])) / 4; }
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) { const i = y * W + x; r[i] = (t[i] * 2 + (y > 0 ? t[i - W] : t[i]) + (y < H - 1 ? t[i + W] : t[i])) / 4; }
+  return r;
 }
 
 // Recorta los bordes transparentes y deja un pequeño margen
